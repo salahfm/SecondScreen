@@ -1,4 +1,8 @@
-#!/bin/sh -e
+#!/bin/sh
+
+# -e is set here as well as in the shebang so the script behaves identically
+# whether it is executed directly (build_apkovl) or as "sh script".
+set -e
 
 # Generates the apkovl overlay tarball for the SecondScreen image.
 # mkimage.sh (via build_apkovl) runs this inside the fakeroot environment
@@ -38,6 +42,10 @@ rc_add() {
 tmp="$(mktemp -d)"
 trap cleanup EXIT
 
+# Every directory that makefile() below writes into must exist first (a
+# failed redirect here would otherwise just leave the file out of the image).
+mkdir -p "$tmp/etc/apk/keys"
+
 # ---------------------------------------------------------------- identity
 makefile root:root 0644 "$tmp"/etc/hostname <<EOF
 $HOSTNAME
@@ -48,7 +56,6 @@ EOF
 # from the ISO's own boot repository (mounted at /media/cdrom/apks by the
 # initramfs). This keeps the ISO itself small and lets us re-tune the stack
 # without rebuilding the kernel/modloop.
-mkdir -p "$tmp"/etc/apk
 makefile root:root 0644 "$tmp"/etc/apk/world <<EOF
 alpine-base
 dhcpcd
@@ -182,4 +189,7 @@ for f in $(cd "$OVERLAY_SRC" && find . -type f | sed 's|^\./||'); do
 done
 
 # ----------------------------------------------------------------- tarball
-tar -c -C "$tmp" etc | gzip -9n > "$HOSTNAME.apkovl.tar.gz"
+# ALL top-level trees that were written above must be listed here: the tar is
+# unpacked at / by the initramfs, and anything left out is simply absent from
+# the running system (no launcher, no wizard, no autologin profile).
+tar -c -C "$tmp" etc root usr | gzip -9n > "$HOSTNAME.apkovl.tar.gz"

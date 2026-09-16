@@ -60,7 +60,10 @@ mkdir -p "$OUTDIR"
 # $OUTDIR) and runs it with CWD set to the image staging root. The generator
 # then finds the overlay tree via "$(dirname "$0")/overlay", so both have to
 # sit side by side in $OUTDIR: <OUTDIR>/secondscreen.apkovl.sh + overlay/.
+# The generator must be executable: build_apkovl runs it via fakeroot as
+# "$_script", not "sh $_script".
 cp "$PROJECT_DIR/build/secondscreen.apkovl.sh" "$OUTDIR/secondscreen.apkovl.sh"
+chmod +x "$OUTDIR/secondscreen.apkovl.sh"
 rm -rf "$OUTDIR/overlay"
 cp -r "$PROJECT_DIR/build/overlay" "$OUTDIR/overlay"
 
@@ -69,12 +72,25 @@ cp -r "$PROJECT_DIR/build/overlay" "$OUTDIR/overlay"
 sed -i "s|PLACEHOLDER_BUILD_KEY|$(sed -n '2p' "$ABUILD_DIR/secondscreen-local.rsa.pub")|" \
 	"$OUTDIR/secondscreen.apkovl.sh"
 
-# Pre-flight: generate the apkovl once here so generator errors surface in
+# Pre-flight: generate the apkovl once here and assert the files the image
+# cannot boot without are actually in it, so a broken generator fails in
 # seconds instead of after the multi-minute kernel/modloop build. mkimage.sh
 # regenerates it into the ISO; this copy is only a smoke test.
 echo "==> Pre-flight: generating apkovl"
-( cd "$OUTDIR" && sh ./secondscreen.apkovl.sh secondscreen && \
-  tar -tzf secondscreen.apkovl.tar.gz | head -n 5 && \
+( cd "$OUTDIR" && sh ./secondscreen.apkovl.sh secondscreen
+  for want in etc/hostname etc/inittab etc/apk/world etc/apk/repositories \
+	etc/apk/keys/secondscreen-local.pub etc/runlevels/boot/secondscreen-net \
+	etc/init.d/secondscreen-net etc/init.d/secondscreen-sync \
+	root/.profile \
+	usr/local/bin/secondscreen-launch usr/local/bin/secondscreen-settings \
+	usr/local/bin/secondscreen-wizard usr/local/bin/secondscreen-autologin \
+	usr/local/bin/secondscreen-sync usr/local/bin/secondscreen-net; do
+	tar -tzf secondscreen.apkovl.tar.gz | grep -qx "$want" || {
+		echo "error: apkovl is missing $want" >&2
+		exit 1
+	}
+  done
+  echo "    apkovl OK: $(tar -tzf secondscreen.apkovl.tar.gz | wc -l) entries"
   rm -f secondscreen.apkovl.tar.gz )
 
 cd "$OUTDIR"
