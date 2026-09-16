@@ -1,9 +1,13 @@
 #!/bin/sh -e
 
 # Generates the apkovl overlay tarball for the SecondScreen image.
-# It is executed by mkimage.sh inside the fakeroot environment with CWD set
-# to the ISO staging root; the generated tar ends up as
-# <hostname>.apkovl.tar.gz and is unpacked by Alpine's init at every boot.
+# mkimage.sh (via build_apkovl) runs this inside the fakeroot environment
+# with CWD set to the ISO staging root, and the generated tar lands in that
+# staging root as <hostname>.apkovl.tar.gz, from where it is baked into the
+# ISO and unpacked by Alpine's init at every boot.
+#
+# The overlay tree is read from "$(dirname "$0")/overlay", so build/mkprofile.sh
+# stages both this script and overlay/ together in $OUTDIR.
 #
 # Everything here must stay POSIX sh + busybox.
 
@@ -158,19 +162,24 @@ rc_add savecache shutdown
 # ------------------------------------------------------------ overlay tree
 # Files that are static content (copied verbatim into the apkovl tar).
 OVERLAY_SRC="$(dirname "$0")/overlay"
-if [ -d "$OVERLAY_SRC" ]; then
-	# e.g. overlay/etc/init.d/secondscreen-net -> $tmp/etc/init.d/secondscreen-net
-	for f in $(cd "$OVERLAY_SRC" && find . -type f | sed 's|^\./||'); do
-		mkdir -p "$tmp/$(dirname "$f")"
-		cp "$OVERLAY_SRC/$f" "$tmp/$f"
-		chown root:root "$tmp/$f"
-		# Init scripts and bin/ helpers are executable; config files are not.
-		case "$f" in
-			etc/init.d/*|usr/local/bin/*) chmod 755 "$tmp/$f" ;;
-			*) chmod 644 "$tmp/$f" ;;
-		esac
-	done
+# Fail loudly rather than silently shipping an image with no services in it
+# (a missing overlay would otherwise produce a bootable-but-useless ISO).
+if [ ! -d "$OVERLAY_SRC" ]; then
+	echo "error: overlay tree not found at $OVERLAY_SRC" >&2
+	exit 1
 fi
+
+# e.g. overlay/etc/init.d/secondscreen-net -> $tmp/etc/init.d/secondscreen-net
+for f in $(cd "$OVERLAY_SRC" && find . -type f | sed 's|^\./||'); do
+	mkdir -p "$tmp/$(dirname "$f")"
+	cp "$OVERLAY_SRC/$f" "$tmp/$f"
+	chown root:root "$tmp/$f"
+	# Init scripts and bin/ helpers are executable; config files are not.
+	case "$f" in
+		etc/init.d/*|usr/local/bin/*) chmod 755 "$tmp/$f" ;;
+		*) chmod 644 "$tmp/$f" ;;
+	esac
+done
 
 # ----------------------------------------------------------------- tarball
 tar -c -C "$tmp" etc | gzip -9n > "$HOSTNAME.apkovl.tar.gz"

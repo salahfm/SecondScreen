@@ -52,32 +52,32 @@ if [ ! -f "$ABUILD_DIR/secondscreen-local.rsa" ]; then
 fi
 echo "PACKAGER_PRIVKEY=\"$ABUILD_DIR/secondscreen-local.rsa\"" > "$ABUILD_DIR/abuild.conf"
 
-echo "==> Staging overlay tree"
-OVERLAY_STAGE="$(mktemp -d)"
-mkdir -p "$OVERLAY_STAGE/etc/apk/keys" \
-         "$OVERLAY_STAGE/etc/secondscreen" \
-         "$OVERLAY_STAGE/etc/wpa_supplicant" \
-         "$OVERLAY_STAGE/etc/network" \
-         "$OVERLAY_STAGE/etc/init.d" \
-         "$OVERLAY_STAGE/root" \
-         "$OVERLAY_STAGE/usr/local/bin"
-cp -r "$PROJECT_DIR/build/overlay/etc/." "$OVERLAY_STAGE/etc/"
-cp -r "$PROJECT_DIR/build/overlay/usr/." "$OVERLAY_STAGE/usr/"
+echo "==> Staging overlay tree + apkovl generator"
+mkdir -p "$OUTDIR"
 
-# Ship the matching public key inside the image (replaces the placeholder
-# in the apkovl generator below, and is also copied directly for safety).
-cp "$ABUILD_DIR/secondscreen-local.rsa.pub" \
-	"$OVERLAY_STAGE/etc/apk/keys/secondscreen-local.pub"
+# mkimage.sh resolves the apkovl script through build_apkovl(), which tries
+# "$PWD/$apkovl" first (PWD = the directory mkimage.sh is launched from, i.e.
+# $OUTDIR) and runs it with CWD set to the image staging root. The generator
+# then finds the overlay tree via "$(dirname "$0")/overlay", so both have to
+# sit side by side in $OUTDIR: <OUTDIR>/secondscreen.apkovl.sh + overlay/.
+cp "$PROJECT_DIR/build/secondscreen.apkovl.sh" "$OUTDIR/secondscreen.apkovl.sh"
+rm -rf "$OUTDIR/overlay"
+cp -r "$PROJECT_DIR/build/overlay" "$OUTDIR/overlay"
 
-echo "==> Generating apkovl overlay tarball"
-# apkovl generator expects to run with CWD = ISO staging root, and looks
-# for overlay files relative to itself.
-cp "$PROJECT_DIR/build/secondscreen.apkovl.sh" "$OVERLAY_STAGE/"
-cd "$OVERLAY_STAGE"
-sed -i "s|PLACEHOLDER_BUILD_KEY|$(cat "$ABUILD_DIR/secondscreen-local.rsa.pub" | sed -n '2p')|" \
-	secondscreen.apkovl.sh
-sh secondscreen.apkovl.sh secondscreen
-ls -la secondscreen.apkovl.tar.gz
+# Bake in the public half of the key that signs the boot repository APKINDEX
+# (the image trusts it to install packages at boot).
+sed -i "s|PLACEHOLDER_BUILD_KEY|$(sed -n '2p' "$ABUILD_DIR/secondscreen-local.rsa.pub")|" \
+	"$OUTDIR/secondscreen.apkovl.sh"
+
+# Pre-flight: generate the apkovl once here so generator errors surface in
+# seconds instead of after the multi-minute kernel/modloop build. mkimage.sh
+# regenerates it into the ISO; this copy is only a smoke test.
+echo "==> Pre-flight: generating apkovl"
+( cd "$OUTDIR" && sh ./secondscreen.apkovl.sh secondscreen && \
+  tar -tzf secondscreen.apkovl.tar.gz | head -n 5 && \
+  rm -f secondscreen.apkovl.tar.gz )
+
+cd "$OUTDIR"
 
 echo "==> Registering custom profile with mkimage"
 # mkimage.sh auto-sources ~/.mkimage/mkimg.*.sh as profile plugins.
