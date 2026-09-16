@@ -21,6 +21,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Pull Alpine explicitly so pull failures (e.g. Docker Hub anonymous
+      # rate limits on shared runners) are visible in their own step.
+      # public.ecr.aws mirrors the Docker Hub library and is rate-limit free.
+      - name: Pull Alpine image
+        run: |
+          set -x
+          docker info --format '{{.ServerVersion}}'
+          if ! docker pull alpine:3.20; then
+            echo "Docker Hub pull failed - falling back to public.ecr.aws mirror"
+            docker pull public.ecr.aws/docker/library/alpine:3.20
+            docker tag public.ecr.aws/docker/library/alpine:3.20 alpine:3.20
+          fi
+
       # The build must run inside Alpine (apk, abuild, mkimage). JS-based
       # actions don't work in Alpine containers (musl), so the Alpine side
       # runs via plain `docker run` on the Ubuntu runner instead.
