@@ -37,37 +37,38 @@ jobs:
       # The build must run inside Alpine (apk, abuild, mkimage). JS-based
       # actions don't work in Alpine containers (musl), so the Alpine side
       # runs via plain `docker run` on the Ubuntu runner instead.
+      #
+      # The container is named so a later step can read its full stdout
+      # (docker logs) even though the step itself fails.
       - name: Build ISO + flashable image inside Alpine container
         run: |
-          docker run --rm \
+          docker run --name ssbuild \
             -v "$PWD":/project \
             -e APORTS_REF \
             -e ISO_TAG \
             -e PROJECT_DIR=/project \
             -e OUTDIR=/project/out \
             alpine:3.20 \
-            sh /project/build/mkprofile.sh 2>&1 | tee build-log.txt
-          exit ${PIPESTATUS[0]}
+            sh /project/build/mkprofile.sh
+          rc=$?
+          echo "BUILD_EXIT=$rc"
+          exit $rc
 
-      - name: Upload build log (always, for debugging)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: build-log.txt
-          if-no-files-found: ignore
-
-      # Job summaries are readable on the public run page without auth,
-      # unlike job logs/artifacts via the API.
+      # Full build output lands in the job summary, which is readable on
+      # the public run page without any authentication.
       - name: Publish build log to job summary
         if: always()
         run: |
           {
-            echo '### SecondScreen build log (tail)'
+            echo '### SecondScreen build output'
             echo '```'
-            tail -n 300 build-log.txt 2>/dev/null || echo '(no log captured)'
+            docker logs ssbuild 2>&1 || echo '(container gone - see step above)'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove build container
+        if: always()
+        run: docker rm -f ssbuild >/dev/null 2>&1 || true
 
       - name: Upload artifacts
         if: success()
