@@ -1,0 +1,139 @@
+#!/bin/sh -e
+
+# /usr/local/bin/secondscreen-launch — kiosk entry point.
+# Started from /etc/inittab on tty7 (respawn) by the custom inittab; this
+# means we're session leader on vt7 — X can take over this VT directly.
+#
+# Boot flow:
+#   1. If no Wi-Fi network is configured yet, hand over to the wizard on
+#      tty1 (root autologin there runs /usr/local/bin/secondscreen-wizard
+#      via /root/.profile), and exit.
+#   2. Wait for wlan0 to get a DHCP lease.
+#   3. Start X on this VT and launch moonlight-qt fullscreen into the PC,
+#      auto-restarting on crash/disconnect.
+#
+# Wi-Fi credentials + pairing config live as plain files on the USB
+# stick's data partition (vfat, LABEL=SECONDSCREEN). secondscreen-sync
+# loads them into /etc and secondscreen-net brings the network up, both
+# in the boot runlevel before this script runs (inittab on tty7).
+#
+# Everything must stay POSIX sh + busybox.
+
+LOG=/var/log/secondscreen.log
+X_LOG=/var/log/Xorg.0.log
+
+log() {
+	echo "[secondscreen] $(date '+%H:%M:%S') $*" >> "$LOG"
+}
+
+wifi_configured() {
+	grep -q '^network=' /etc/wpa_supplicant/wpa_supplicant.conf 2>/dev/null
+}
+
+have_lease() {
+	ip -4 addr show dev wlan0 2>/dev/null | grep -q 'inet '
+}
+
+wait_for_lease() {
+	_i=0
+	while [ "$_i" -lt 90 ]; do
+		if have_lease; then
+			log "wlan0 has a lease: $(ip -4 addr show dev wlan0 | awk '/inet /{print $2}')"
+			return 0
+		fi
+		sleep 2
+		_i=$((_i + 2))
+	done
+	return 1
+}
+
+start_x() {
+	log "starting X on tty7"
+	# -norestart: if X dies we want the outer loop to handle it, not X itself.
+	X :0 -norestart -logfile "$X_LOG" vt7 &
+	XPID=$!
+
+	_i=0
+	while [ "$_i" -lt 20 ]; do
+		if [ -S /tmp/.X11-unix/X0 ]; then
+			log "X is up (pid $XPID)"
+			return 0
+		fi
+		sleep 1
+		_i=$((_i + 1))
+	done
+	log "X failed to start - see $X_LOG"
+	return 1
+}
+
+start_stream() {
+	# Read connection settings from pairing.conf (written by the wizard).
+	. /etc/secondscreen/pairing.conf 2>/dev/null || {
+		log "no pairing.conf - cannot start stream"
+		return 1
+	}
+
+	HOST="${host:-}"
+	RES="${resolution:-1920x1080}"
+	FPS="${fps:-60}"
+	BITRATE="${bitrate:-8000}"
+	APP="${app:-Desktop}"
+
+	if [ -z "$HOST" ]; then
+		log "pairing.conf has no host set - cannot start stream"
+		return 1
+	fi
+
+	# Ensure a sane XKB layout for Moonlight input handling.
+	setxkbmap us 2>/dev/null || true
+
+	log "launching moonlight stream to $HOST ($RES @ $FPS, ${BITRATE}kbps, app=$APP)"
+	while :; do
+		# Re-read pairing.conf on every (re)start so changes made in the
+		# settings editor on tty2 (option 6) apply immediately.
+		. /etc/secondscreen/pairing.conf 2>/dev/null || true
+		HOST="${host:-$HOST}"
+		RES="${resolution:-1920x1080}"
+		FPS="${fps:-60}"
+		BITRATE="${bitrate:-8000}"
+		APP="${app:-Desktop}"
+		log "stream to $HOST ($RES @ $FPS, ${BITRATE}kbps, app=$APP)"
+		moonlight stream -host "$HOST" \
+			-width "${RES%x*}" -height "${RES#*x}" -fps "$FPS" \
+			-bitrate "$BITRATE" \
+			-remote -app "$APP" \
+			>> "$LOG" 2>&1
+		_rc=$?
+		log "moonlight exited (rc=$_rc); restarting in 3s (Ctrl+Alt+Shift+Q to quit cleanly)"
+		sleep 3
+	done
+}
+
+# ------------------------------------------------------------------ main
+log "=== secondscreen-launch starting ==="
+
+if ! wifi_configured; then
+	log "no Wi-Fi configured yet - handing over to the setup wizard on tty1"
+	# inittab respawns us; wait a bit so we don't spin hot while the
+	# wizard is doing its thing on tty1.
+	sleep 30
+	exit 0
+fi
+
+# secondscreen-net (boot runlevel) should already have brought wlan0 up;
+# just wait for the lease here.
+wait_for_lease || {
+	log "no DHCP lease - giving up this boot"
+	exit 1
+}
+
+if ! start_x; then
+	# inittab will respawn us if X failed hard; fall back to tty1 hint.
+	log "X failed - check /var/log/Xorg.0.log from tty1/2"
+	exit 1
+fi
+export DISPLAY=:0
+
+start_stream
+
+log "stream loop ended"

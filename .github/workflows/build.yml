@@ -1,0 +1,46 @@
+name: Build SecondScreen ISO
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'build/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - 'build/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      APORTS_REF: v3.20.0
+      ISO_TAG: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      # The build must run inside Alpine (apk, abuild, mkimage). JS-based
+      # actions don't work in Alpine containers (musl), so the Alpine side
+      # runs via plain `docker run` on the Ubuntu runner instead.
+      - name: Build ISO + flashable image inside Alpine container
+        run: |
+          docker run --rm \
+            -v "$PWD":/project \
+            -e APORTS_REF \
+            -e ISO_TAG \
+            -e PROJECT_DIR=/project \
+            -e OUTDIR=/project/out \
+            alpine:3.20 \
+            sh /project/build/mkprofile.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: secondscreen-iso
+          path: |
+            out/*.iso
+            out/*.img
+            out/*.sha256
+          if-no-files-found: error

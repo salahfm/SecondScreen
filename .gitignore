@@ -1,0 +1,15 @@
+# Build outputs (CI produces these)
+out/
+*.iso
+*.img
+*.sha256
+
+# Editor / OS cruft
+Thumbs.db
+desktop.ini
+*.swp
+*~
+
+# Secrets — never commit these if you ever export them locally
+windows/sunshine-cred.xml
+windows/setup-token.txt

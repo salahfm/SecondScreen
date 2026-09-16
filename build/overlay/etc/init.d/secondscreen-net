@@ -1,0 +1,17 @@
+#!/bin/sh
+
+# /etc/init.d/secondscreen-net — Wi-Fi association + DHCP on wlan0.
+# Kept deliberately self-contained (no ifupdown / wpa_supplicant init
+# scripts) so behavior is identical on every boot.
+
+command="/usr/local/bin/secondscreen-net"
+command_background="yes"
+pidfile="/run/secondscreen-net.pid"
+output_log="/var/log/secondscreen.log"
+error_log="/var/log/secondscreen.log"
+
+depend() {
+	need localmount
+	after secondscreen-sync
+	before secondscreen
+}

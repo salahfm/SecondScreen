@@ -1,0 +1,368 @@
+#!/bin/sh -e
+
+# /usr/local/bin/secondscreen-wizard — Wi-Fi + pairing setup.
+# Runs automatically on tty1 at boot (root autologin) when no Wi-Fi network
+# is configured yet.
+#
+# Two modes:
+#
+# 1. Zero-touch (auto-setup): if the USB stick contains
+#    secondscreen-setup.txt (written by the PC installer's "prepare USB
+#    stick" mode), settings are applied automatically: Wi-Fi, pairing via
+#    the PC-side PIN waiter (http://<pc>:47991), persistence, cleanup, and
+#    reboot into stream mode. No typing on the laptop.
+#
+# 2. Interactive (default): scan & pick Wi-Fi, enter password, enter the
+#    PC's IP, run `moonlight pair <ip>` and type the PIN it displays into
+#    Sunshine's web UI on the PC (https://<pc>:47990 -> PIN).
+#
+# Everything must stay POSIX sh + busybox.
+
+PERSIST_LABEL="SECONDSCREEN"
+PERSIST_MNT="/media/secondscreen"
+SETUP_FILE="$PERSIST_MNT/secondscreen-setup.txt"
+ETC_WIFI=/etc/wpa_supplicant/wpa_supplicant.conf
+ETC_PAIR=/etc/secondscreen/pairing.conf
+
+hr() {
+	echo "----------------------------------------------------------------"
+}
+
+# Read a password without echoing it. Sets the global $REPLY.
+get_hidden() {
+	stty -echo 2>/dev/null || true
+	IFS= read -r REPLY
+	_rc=$?
+	stty echo 2>/dev/null || true
+	echo ""
+	return "$_rc"
+}
+
+# ------------------------------------------------------------- persistence
+mount_persist() {
+	mkdir -p "$PERSIST_MNT"
+	mountpoint -q "$PERSIST_MNT" && return 0
+	mount LABEL="$PERSIST_LABEL" "$PERSIST_MNT" 2>/dev/null && return 0
+	return 1
+}
+
+# ------------------------------------------------------------- wifi config
+wifi_save() {
+	SSID="$1"
+	PSK="$2"
+	HIDDEN="$3"
+
+	{
+		echo "ctrl_interface=/var/run/wpa_supplicant"
+		echo "ctrl_interface_group=0"
+		echo "update_config=1"
+		echo "network={"
+		[ "$HIDDEN" = "y" ] && echo "	scan_ssid=1"
+		echo "	ssid=\"$SSID\""
+		echo "	psk=\"$PSK\""
+		echo "}"
+	} > "$ETC_WIFI"
+	chmod 600 "$ETC_WIFI"
+
+	# Restart the network helper to pick up the new config without reboot.
+	rc-service secondscreen-net restart >/dev/null 2>&1 \
+		|| /usr/local/bin/secondscreen-net >/dev/null 2>&1 \
+		|| true
+}
+
+have_lease() {
+	ip -4 addr show dev wlan0 2>/dev/null | grep -q 'inet '
+}
+
+wait_lease() {
+	_i=0
+	while [ "$_i" -lt "$1" ]; do
+		if have_lease; then
+			return 0
+		fi
+		sleep 2
+		_i=$((_i + 2))
+	done
+	return 1
+}
+
+wait_reachable() {
+	_i=0
+	while [ "$_i" -lt "$2" ]; do
+		if ping -c 1 -W 1 "$1" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 2
+		_i=$((_i + 2))
+	done
+	return 1
+}
+
+write_pairing_conf() {
+	_host="$1"
+	{
+		echo "host=$_host"
+		echo "resolution=${2:-1920x1080}"
+		echo "fps=${3:-60}"
+		echo "bitrate=${4:-8000}"
+		echo "app=${5:-Desktop}"
+	} > "$ETC_PAIR"
+	chmod 600 "$ETC_PAIR"
+}
+
+# ------------------------------------------------------------ zero-touch
+# Returns 0 if auto-setup fully succeeded (caller then reboots).
+auto_setup() {
+	mount_persist || return 1
+	[ -f "$SETUP_FILE" ] || return 1
+
+	# Parse the setup file (tr -d '\r': the file may be written on Windows).
+	SSID=""; PSK=""; HIDDEN="n"; HOST=""; TOKEN=""
+	RES=""; FPS=""; BR=""; APP=""
+	while IFS= read -r _line || [ -n "$_line" ]; do
+		_line=$(printf '%s' "$_line" | tr -d '\r')
+		case "$_line" in
+			ssid=*)        SSID="${_line#ssid=}" ;;
+			psk=*)         PSK="${_line#psk=}" ;;
+			hidden=*)      HIDDEN="${_line#hidden=}" ;;
+			host=*)        HOST="${_line#host=}" ;;
+			token=*)       TOKEN="${_line#token=}" ;;
+			resolution=*)  RES="${_line#resolution=}" ;;
+			fps=*)         FPS="${_line#fps=}" ;;
+			bitrate=*)     BR="${_line#bitrate=}" ;;
+			app=*)         APP="${_line#app=}" ;;
+		esac
+	done < "$SETUP_FILE"
+
+	if [ -z "$SSID" ] || [ -z "$PSK" ] || [ -z "$HOST" ] || [ -z "$TOKEN" ]; then
+		echo "zero-touch: setup file is incomplete (need ssid, psk, host, token)"
+		return 1
+	fi
+
+	hr
+	echo "  SecondScreen - automatic setup"
+	hr
+	echo ""
+	echo "Found a zero-touch setup file on the USB stick."
+	echo "Connecting to Wi-Fi and pairing with the PC automatically..."
+	echo ""
+
+	# 1) Wi-Fi
+	echo "[1/4] Connecting to Wi-Fi network '$SSID' ..."
+	wifi_save "$SSID" "$PSK" "$HIDDEN"
+	if ! wait_lease 45; then
+		echo "  FAILED: no IP address (wrong password? network down?)"
+		return 1
+	fi
+	echo "  OK: $(ip -4 addr show dev wlan0 | awk '/inet /{print $2}')"
+
+	# 2) PC reachable + waiter up
+	echo "[2/4] Looking for the PC ($HOST) ..."
+	if ! wait_reachable "$HOST" 30; then
+		echo "  FAILED: PC not reachable (asleep? different network?)"
+		return 1
+	fi
+	echo "  OK."
+	echo "  Checking the pairing helper on the PC ..."
+	if ! wget -qO- "http://$HOST:47991/secondscreen/ping?token=$TOKEN" 2>/dev/null \
+		| grep -q '"ok"'; then
+		echo "  FAILED: pairing helper not reachable (is the PC set up?)"
+		return 1
+	fi
+	echo "  OK."
+
+	# 3) Pair: moonlight pair prints a PIN; capture it while the process
+	#    waits, forward it to the PIN waiter on the PC, then check the result.
+	echo "[3/4] Pairing with the PC ..."
+	_tmp=$(mktemp)
+	moonlight pair "$HOST" > "$_tmp" 2>&1 &
+	_mpid=$!
+
+	_pin=""
+	_i=0
+	while [ "$_i" -lt 120 ]; do
+		_pin=$(sed -n 's/.*PIN[[:space:]]*[: ]*\([0-9][0-9][0-9][0-9]\).*/\1/p' "$_tmp" | head -n 1)
+		[ -n "$_pin" ] && break
+		kill -0 "$_mpid" 2>/dev/null || break
+		sleep 1
+		_i=$((_i + 1))
+	done
+
+	if [ -z "$_pin" ]; then
+		echo "  FAILED: no PIN was displayed (see /tmp output below)"
+		cat "$_tmp" | sed 's/^/    /'
+		kill "$_mpid" 2>/dev/null
+		rm -f "$_tmp"
+		return 1
+	fi
+	sed 's/^[[:space:]]*//' "$_tmp" | head -n 8
+	rm -f "$_tmp"
+
+	echo "  Sending the PIN to the PC automatically ..."
+	_resp=$(wget -qO- --header 'Content-Type: application/json' \
+		--post-data "{\"token\":\"$TOKEN\",\"pin\":\"$_pin\",\"name\":\"SecondScreen\"}" \
+		"http://$HOST:47991/secondscreen/pin" 2>&1) || true
+	if ! printf '%s' "$_resp" | grep -q '"ok"'; then
+		echo "  FAILED: the PC did not accept the PIN ($_resp)"
+		wait "$_mpid" 2>/dev/null || true
+		return 1
+	fi
+
+	if ! wait "$_mpid" 2>/dev/null; then
+		echo "  FAILED: moonlight pairing did not complete"
+		return 1
+	fi
+	echo "  OK: paired with $HOST."
+
+	# 4) Persist + cleanup
+	echo "[4/4] Saving settings to the USB stick ..."
+	write_pairing_conf "$HOST" "$RES" "$FPS" "$BR" "$APP"
+	secondscreen-sync save >/dev/null 2>&1 || true
+	rm -f "$SETUP_FILE"
+	sync
+
+	echo ""
+	hr
+	echo "Setup complete! Rebooting into stream mode..."
+	hr
+	return 0
+}
+
+# --------------------------------------------------------------- pairing
+# Interactive pairing: runs `moonlight pair`, user types the PIN into
+# Sunshine's web UI on the PC.
+pair_pc_interactive() {
+	IP="$1"
+
+	echo ""
+	echo "Pairing with $IP ..."
+	echo ""
+	echo "  >>> Watch below - Moonlight will display a 4-digit PIN. <<<"
+	echo "  On your PC, open  https://$IP:47990  in a browser, log in,"
+	echo "  click 'PIN' in the left menu, and type that PIN there."
+	echo ""
+
+	# `moonlight pair` prints the PIN and waits for it to be entered
+	# on the Sunshine side.
+	if ! moonlight pair "$IP"; then
+		echo ""
+		echo "Pairing FAILED. Double-check the PIN at https://$IP:47990 and try again."
+		return 1
+	fi
+
+	write_pairing_conf "$IP"
+	return 0
+}
+
+# -------------------------------------------------------------- interactive
+interactive_setup() {
+	hr
+	echo "  SecondScreen - first-time setup"
+	hr
+	echo ""
+	echo "This laptop will become a wireless second monitor for your Windows PC."
+	echo ""
+	echo "  Step 1 of 2: connect to Wi-Fi"
+	echo "  Step 2 of 2: pair with your PC (PIN comes from the Sunshine web UI)"
+	echo ""
+
+	# ------------------------------------------------------------- 1) wifi
+	echo "Available Wi-Fi networks:"
+	list_networks
+	echo ""
+	printf "Wi-Fi network name (SSID, exact): "
+	IFS= read -r SSID
+	printf "Wi-Fi password (input hidden): "
+	if ! get_hidden; then
+		echo "No password given - aborting setup."
+		exit 1
+	fi
+	PSK="$REPLY"
+	printf "Hidden network? [y/N]: "
+	IFS= read -r HIDDEN
+	HIDDEN=$(echo "${HIDDEN:-n}" | tr '[:upper:]' '[:lower:]')
+
+	if [ -z "${SSID:-}" ]; then
+		echo "No SSID given - aborting setup."
+		exit 1
+	fi
+
+	wifi_save "$SSID" "$PSK" "$HIDDEN"
+
+	echo "Connecting..."
+	if ! wait_lease 30; then
+		echo ""
+		echo "Could not get an IP address. Wrong password? Reboot (Ctrl+Alt+Del) and try again."
+		exit 1
+	fi
+	echo "Connected! IP: $(ip -4 addr show dev wlan0 | awk '/inet /{print $2}')"
+
+	# ----------------------------------------------------------- 2) pairing
+	echo ""
+	hr
+	echo "Step 2: Pair with your PC"
+	echo ""
+	echo "On your Windows PC:"
+	echo "  1. Install 'Sunshine' + 'Virtual Display Driver' (see the README)."
+	echo "  2. Open https://localhost:47990 in a browser and log in."
+	echo ""
+	echo "Then enter this PC's address here."
+	echo ""
+	printf "PC address (IP, e.g. 192.168.1.20): "
+	IFS= read -r PC_ADDR
+
+	if [ -z "${PC_ADDR:-}" ]; then
+		echo "Need the PC address - aborting setup."
+		exit 1
+	fi
+
+	pair_pc_interactive "$PC_ADDR" || {
+		echo ""
+		echo "Setup incomplete. Reboot (Ctrl+Alt+Del) to try again."
+		exit 1
+	}
+
+	# ------------------------------------------------------------- persist
+	echo ""
+	echo "Saving settings to the USB stick..."
+	secondscreen-sync save || true
+}
+
+list_networks() {
+	echo "Scanning for Wi-Fi networks..."
+	iw dev wlan0 scan 2>/dev/null | awk '
+		/^BSS /   { ssid=""; sig="" }
+		/signal:/ { sig=$2 }
+		/SSID:/   { if ($2 != "") print sig "  " substr($0, index($0,$2)) }
+	' | sort -u | head -n 15
+}
+
+# ----------------------------------------------------------------- main
+# Zero-touch first: if the stick carries a setup file, do everything
+# automatically and reboot. Fall back to the interactive wizard on any
+# failure (so the user is never stuck).
+if auto_setup; then
+	sleep 3
+	reboot
+	exit 0
+fi
+
+# If a setup file exists but auto-setup failed, keep it on the stick (the
+# user can fix the PC and simply reboot) and warn before going interactive.
+if mount_persist 2>/dev/null && [ -f "$SETUP_FILE" ]; then
+	echo ""
+	echo "NOTE: a zero-touch setup file was found but automatic setup FAILED."
+	echo "      It stays on the stick - fix the PC side and reboot to retry."
+	echo "      Press Enter to run manual setup instead..."
+	IFS= read -r _
+fi
+
+interactive_setup
+
+echo ""
+hr
+echo "Setup complete! Rebooting into stream mode..."
+echo "(From now on this laptop boots straight to your PC's second screen.)"
+hr
+sleep 3
+reboot

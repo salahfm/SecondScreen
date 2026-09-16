@@ -1,0 +1,6 @@
+#!/bin/sh
+
+# /usr/local/bin/secondscreen-autologin — busybox getty autologin helper.
+# Invoked by getty (-n -l) on tty1: logs in as root without prompting so
+# the first-boot wizard runs automatically via /root/.profile.
+exec /bin/login -f root

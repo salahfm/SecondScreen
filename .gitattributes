@@ -1,0 +1,10 @@
+# Normalize line endings: shell scripts MUST stay LF (busybox sh breaks on
+# CRLF); keep everything LF in the repo regardless of platform.
+* text=auto eol=lf
+
+# Windows scripts are fine either way, but keep CRLF for Notepad-friendliness
+*.ps1 text eol=crlf
+
+# Binary artifacts never checked in
+*.iso binary
+*.img binary

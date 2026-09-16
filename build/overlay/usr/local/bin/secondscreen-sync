@@ -1,0 +1,74 @@
+#!/bin/sh -e
+
+# /usr/local/bin/secondscreen-sync — persist Wi-Fi + pairing config.
+#
+# The system runs from RAM, so /etc is rebuilt from the ISO's apkovl on
+# every boot. The source of truth for user state is a plain directory on
+# the USB stick's FIRST partition (vfat, LABEL=SECONDSCREEN), mounted at
+# /media/secondscreen:
+#
+#   wpa_supplicant.conf   Wi-Fi credentials (copied to /etc before network)
+#   pairing.conf          Moonlight host + stream settings
+#
+# Called as an OpenRC boot service (mode: load) and by the wizard
+# (mode: save). Mode is $1; default is "load".
+
+PERSIST_LABEL="SECONDSCREEN"
+PERSIST_MNT="/media/secondscreen"
+MODE="${1:-load}"
+
+log() {
+	echo "[secondscreen-sync] $*" >&2
+}
+
+mount_persist() {
+	mkdir -p "$PERSIST_MNT"
+	mountpoint -q "$PERSIST_MNT" && return 0
+	if mount LABEL="$PERSIST_LABEL" "$PERSIST_MNT" 2>/dev/null; then
+		log "persist partition mounted at $PERSIST_MNT"
+		return 0
+	fi
+	log "no persist partition (LABEL=$PERSIST_LABEL) found - state will not survive reboot"
+	return 1
+}
+
+do_load() {
+	# Runs in the boot runlevel, before networking.
+	mount_persist || return 0
+
+	# tr -d '\r': the stick is FAT and may be edited on Windows; strip
+	# CRLF line endings so sourced values don't carry stray \r characters.
+	if [ -f "$PERSIST_MNT/wpa_supplicant.conf" ]; then
+		tr -d '\r' < "$PERSIST_MNT/wpa_supplicant.conf" \
+			> /etc/wpa_supplicant/wpa_supplicant.conf
+		chmod 600 /etc/wpa_supplicant/wpa_supplicant.conf
+		log "loaded Wi-Fi config from persist partition"
+	fi
+	if [ -f "$PERSIST_MNT/pairing.conf" ]; then
+		mkdir -p /etc/secondscreen
+		tr -d '\r' < "$PERSIST_MNT/pairing.conf" > /etc/secondscreen/pairing.conf
+		chmod 600 /etc/secondscreen/pairing.conf
+		log "loaded pairing config from persist partition"
+	fi
+}
+
+do_save() {
+	# Runs after the wizard changed /etc. Copy the new state to the stick.
+	mount_persist || return 1
+	if [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]; then
+		cp /etc/wpa_supplicant/wpa_supplicant.conf "$PERSIST_MNT/wpa_supplicant.conf"
+		chmod 600 "$PERSIST_MNT/wpa_supplicant.conf"
+	fi
+	if [ -f /etc/secondscreen/pairing.conf ]; then
+		cp /etc/secondscreen/pairing.conf "$PERSIST_MNT/pairing.conf"
+		chmod 600 "$PERSIST_MNT/pairing.conf"
+	fi
+	sync
+	log "saved Wi-Fi + pairing config to persist partition"
+}
+
+case "$MODE" in
+	load) do_load ;;
+	save) do_save ;;
+	*) echo "usage: $0 [load|save]" >&2; exit 2 ;;
+esac

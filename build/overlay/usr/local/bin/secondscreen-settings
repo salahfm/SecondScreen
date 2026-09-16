@@ -1,0 +1,243 @@
+#!/bin/sh
+
+# /usr/local/bin/secondscreen-settings — on-device settings editor (tty2).
+# Spawned directly by /etc/inittab (respawn), like the kiosk launcher.
+#
+# Lets you change streaming settings on the laptop itself — no need to pull
+# the USB stick and edit files on another PC. Writes /etc/secondscreen/
+# pairing.conf and persists it to the USB stick via secondscreen-sync save.
+# The running stream picks changes up on its next restart (option 6 forces
+# it immediately; the stream also re-reads settings every time it restarts,
+# including after Ctrl+Alt+Shift+Q or a Wi-Fi drop).
+#
+# Deliberately NO `set -e`: a menu must survive failed commands.
+
+PERSIST_LABEL="SECONDSCREEN"
+PERSIST_MNT="/media/secondscreen"
+CONF=/etc/secondscreen/pairing.conf
+
+hr() {
+	echo "----------------------------------------------------------------"
+}
+
+# ---------------------------------------------------------------- config
+ensure_conf() {
+	mkdir -p /etc/secondscreen
+	if [ ! -f "$CONF" ]; then
+		{
+			echo "host="
+			echo "resolution=1920x1080"
+			echo "fps=60"
+			echo "bitrate=8000"
+			echo "app=Desktop"
+		} > "$CONF"
+		chmod 600 "$CONF"
+	fi
+}
+
+get_val() {
+	# tr -d '\r': tolerate CRLF if pairing.conf was edited on Windows.
+	grep "^$1=" "$CONF" 2>/dev/null | head -n 1 | cut -d= -f2- | tr -d '\r'
+}
+
+set_val() {
+	_key="$1"
+	_val="$2"
+	grep -v "^$_key=" "$CONF" 2>/dev/null > "$CONF.tmp" || true
+	echo "$_key=$_val" >> "$CONF.tmp"
+	mv "$CONF.tmp" "$CONF"
+	chmod 600 "$CONF"
+}
+
+persist() {
+	secondscreen-sync save >/dev/null 2>&1 || \
+		echo "  (could not write to USB stick - change is temporary)"
+}
+
+# ------------------------------------------------------------- actions
+# Restart the stream so new settings apply right away: the kiosk launcher
+# re-reads pairing.conf on every moonlight exit, so killing moonlight is
+# enough.
+restart_stream() {
+	if pidof moonlight >/dev/null 2>&1; then
+		echo "  Restarting stream with new settings..."
+		kill $(pidof moonlight) 2>/dev/null
+	else
+		echo "  Stream is not running at the moment."
+	fi
+}
+
+pick_from_list() {
+	# pick_from_list "title" "value1" "value2" ... -> sets $PICKED
+	_title="$1"; shift
+	_i=1
+	for _v in "$@"; do
+		echo "    $_i) $_v"
+		_i=$((_i + 1))
+	done
+	printf "  Choose 1-%d: " "$#"
+	IFS= read -r _n
+	case "$_n" in
+		''|*[!0-9]*) PICKED="" ;;
+		*)
+			if [ "$_n" -ge 1 ] && [ "$_n" -le "$#" ]; then
+				_i=1
+				for _v in "$@"; do
+					[ "$_i" -eq "$_n" ] && PICKED="$_v"
+					_i=$((_i + 1))
+				done
+			else
+				PICKED=""
+			fi
+			;;
+	esac
+}
+
+change_resolution() {
+	pick_from_list "Resolution" 1280x720 1600x900 1920x1080 2560x1440
+	if [ -n "$PICKED" ]; then
+		set_val resolution "$PICKED"
+		echo "  Resolution set to $PICKED."
+	fi
+}
+
+change_fps() {
+	pick_from_list "Frames per second" 30 60
+	if [ -n "$PICKED" ]; then
+		set_val fps "$PICKED"
+		echo "  FPS set to $PICKED."
+	fi
+}
+
+change_bitrate() {
+	pick_from_list "Bitrate (higher = sharper, needs better Wi-Fi)" \
+		"2000 (low)" "4000" "6000 (balanced)" "8000 (default)" "12000" "20000 (high)"
+	if [ -n "$PICKED" ]; then
+		set_val bitrate "$(echo "$PICKED" | cut -d' ' -f1)"
+		echo "  Bitrate set to $(get_val bitrate) kbps."
+	fi
+}
+
+change_app() {
+	printf "  App name to stream [Desktop]: "
+	IFS= read -r _a
+	[ -n "$_a" ] && set_val app "$_a"
+	echo "  App set to $(get_val app)."
+}
+
+change_host() {
+	printf "  PC address (IP, e.g. 192.168.1.20): "
+	IFS= read -r _h
+	if [ -n "$_h" ]; then
+		set_val host "$_h"
+		echo "  PC address set to $_h."
+		echo "  NOTE: if this is a DIFFERENT PC (not this one at a new address),"
+		echo "  use 'Pair with a PC' below - pairing is per-PC."
+	fi
+}
+
+pair_pc() {
+	_host="$(get_val host)"
+	[ -n "$_host" ] || { echo "  Set a PC address first (option 5)."; return; }
+	echo ""
+	echo "  Moonlight will display a 4-digit PIN."
+	echo "  On the PC, open https://$_host:47990 -> 'PIN' and type it there."
+	echo ""
+	if moonlight pair "$_host"; then
+		echo "  Pairing OK."
+	else
+		echo "  Pairing FAILED (is Sunshine running on the PC? correct IP?)"
+	fi
+}
+
+check_connection() {
+	_host="$(get_val host)"
+	echo ""
+	if ! ip -4 addr show dev wlan0 2>/dev/null | grep -q 'inet '; then
+		echo "  Wi-Fi is not connected. Check the Wi-Fi network / reboot."
+		return
+	fi
+	echo "  Wi-Fi: OK ($(ip -4 addr show dev wlan0 | awk '/inet /{print $2}'))"
+	if [ -z "$_host" ]; then
+		echo "  No PC address configured yet."
+		return
+	fi
+	if ping -c 2 -W 2 "$_host" >/dev/null 2>&1; then
+		echo "  Ping to $_host: OK"
+	else
+		echo "  Ping to $_host FAILED (PC asleep? different network?)"
+		return
+	fi
+	if moonlight list "$_host" >/dev/null 2>&1; then
+		echo "  Sunshine on $_host: reachable and paired"
+	else
+		echo "  Sunshine on $_host: NOT reachable/paired (is it running?)"
+	fi
+}
+
+reset_setup() {
+	printf "  Really erase Wi-Fi + pairing settings and reboot into the setup wizard? [y/N]: "
+	IFS= read -r _y
+	[ "$_y" = "y" ] || return 0
+
+	mkdir -p "$PERSIST_MNT"
+	mountpoint -q "$PERSIST_MNT" || mount LABEL="$PERSIST_LABEL" "$PERSIST_MNT" 2>/dev/null
+	if mountpoint -q "$PERSIST_MNT"; then
+		rm -f "$PERSIST_MNT/wpa_supplicant.conf" "$PERSIST_MNT/pairing.conf"
+		sync
+		echo "  Erased settings from USB stick."
+	else
+		echo "  (USB stick data partition not found - erasing RAM copies only)"
+	fi
+	: > /etc/wpa_supplicant/wpa_supplicant.conf
+	echo "ctrl_interface=/var/run/wpa_supplicant" > /etc/wpa_supplicant/wpa_supplicant.conf
+	echo "ctrl_interface_group=0" >> /etc/wpa_supplicant/wpa_supplicant.conf
+	rm -f "$CONF"
+	echo "  Rebooting into the setup wizard..."
+	sleep 2
+	reboot
+}
+
+show_status() {
+	ensure_conf
+	hr
+	echo "  Current settings ($CONF):"
+	grep -v '^#' "$CONF" | grep -v '^$' | sed 's/^/    /'
+	hr
+}
+
+# ----------------------------------------------------------------- menu
+while :; do
+	clear 2>/dev/null || true
+	show_status
+	echo "  1) Resolution           (now: $(get_val resolution))"
+	echo "  2) Frames per second    (now: $(get_val fps))"
+	echo "  3) Bitrate              (now: $(get_val bitrate) kbps)"
+	echo "  4) Streaming app        (now: $(get_val app))"
+	echo "  5) Change PC address"
+	echo "  6) Restart stream now (apply changes)"
+	echo "  7) Check Wi-Fi + PC connection"
+	echo "  8) Pair with a PC (PIN)"
+	echo "  9) Reset everything & re-run first-boot setup"
+	echo "  0) Exit"
+	echo ""
+	printf "  Choice: "
+	IFS= read -r choice
+
+	case "$choice" in
+		1) change_resolution; persist ;;
+		2) change_fps; persist ;;
+		3) change_bitrate; persist ;;
+		4) change_app; persist ;;
+		5) change_host; persist ;;
+		6) restart_stream ;;
+		7) check_connection ;;
+		8) pair_pc ;;
+		9) reset_setup ;;
+		0) exit 0 ;;
+		*) ;;
+	esac
+	echo ""
+	printf "  Press Enter to continue..."
+	IFS= read -r _
+done

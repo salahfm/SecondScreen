@@ -1,0 +1,43 @@
+#!/bin/sh -e
+
+# /usr/local/bin/secondscreen-net — bring up wlan0: associate with the
+# saved network (wpa_supplicant) and get a DHCP lease (dhcpcd).
+# Called from the OpenRC service /etc/init.d/secondscreen-net (boot runlevel,
+# after secondscreen-sync has loaded persisted config into /etc).
+
+IFACE=wlan0
+WPA_CONF=/etc/wpa_supplicant/wpa_supplicant.conf
+
+echo "[secondscreen-net] starting Wi-Fi on $IFACE"
+
+ip link set "$IFACE" up 2>/dev/null || true
+
+# If there is no saved network yet, nothing to do — the wizard on tty1
+# handles first-time setup.
+if ! grep -q '^network=' "$WPA_CONF" 2>/dev/null; then
+	echo "[secondscreen-net] no Wi-Fi configured yet (first boot)"
+	exit 0
+fi
+
+# wpa_supplicant -B backgrounds itself; -i binds to wlan0 only.
+if ! pidof wpa_supplicant >/dev/null 2>&1; then
+	wpa_supplicant -B -i "$IFACE" -c "$WPA_CONF" \
+		-C /var/run/wpa_supplicant || true
+fi
+
+# Wait for association (max ~30s).
+_i=0
+while [ "$_i" -lt 30 ]; do
+	if wpa_cli -i "$IFACE" status 2>/dev/null | grep -q '^wpa_state=COMPLETED'; then
+		break
+	fi
+	sleep 1
+	_i=$((_i + 1))
+done
+
+# DHCP via dhcpcd (already in the world). Only if we don't have a lease.
+if ! ip -4 addr show dev "$IFACE" 2>/dev/null | grep -q 'inet '; then
+	dhcpcd -b -q "$IFACE" || true
+fi
+
+echo "[secondscreen-net] Wi-Fi setup done"

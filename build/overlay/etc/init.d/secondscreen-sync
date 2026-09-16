@@ -1,0 +1,17 @@
+#!/bin/sh
+
+# /etc/init.d/secondscreen-sync — OpenRC boot service: loads Wi-Fi + pairing
+# config from the USB stick's data partition into /etc before networking
+# starts. (The wizard calls `secondscreen-sync save` to write it back.)
+
+command="/usr/local/bin/secondscreen-sync"
+command_arguments="load"
+command_background="yes"
+pidfile="/run/secondscreen-sync.pid"
+output_log="/var/log/secondscreen.log"
+error_log="/var/log/secondscreen.log"
+
+depend() {
+	need localmount
+	before secondscreen-net
+}
