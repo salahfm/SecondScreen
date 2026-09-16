@@ -46,9 +46,19 @@ jobs:
             -e PROJECT_DIR=/project \
             -e OUTDIR=/project/out \
             alpine:3.20 \
-            sh /project/build/mkprofile.sh
+            sh /project/build/mkprofile.sh 2>&1 | tee build-log.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Upload build log (always, for debugging)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build-log.txt
+          if-no-files-found: ignore
 
       - name: Upload artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: secondscreen-iso
