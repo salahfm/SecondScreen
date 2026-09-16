@@ -12,7 +12,7 @@
 #
 # Deliberately NO `set -e`: a menu must survive failed commands.
 
-PERSIST_LABEL="SECONDSCREEN"
+PERSIST_LABEL="SECONDSCRN"
 PERSIST_MNT="/media/secondscreen"
 CONF=/etc/secondscreen/pairing.conf
 

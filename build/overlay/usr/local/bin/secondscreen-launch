@@ -13,7 +13,7 @@
 #      auto-restarting on crash/disconnect.
 #
 # Wi-Fi credentials + pairing config live as plain files on the USB
-# stick's data partition (vfat, LABEL=SECONDSCREEN). secondscreen-sync
+# stick's data partition (vfat, LABEL=SECONDSCRN). secondscreen-sync
 # loads them into /etc and secondscreen-net brings the network up, both
 # in the boot runlevel before this script runs (inittab on tty7).
 #

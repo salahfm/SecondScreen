@@ -18,7 +18,7 @@
 #
 # Everything must stay POSIX sh + busybox.
 
-PERSIST_LABEL="SECONDSCREEN"
+PERSIST_LABEL="SECONDSCRN"
 PERSIST_MNT="/media/secondscreen"
 SETUP_FILE="$PERSIST_MNT/secondscreen-setup.txt"
 ETC_WIFI=/etc/wpa_supplicant/wpa_supplicant.conf

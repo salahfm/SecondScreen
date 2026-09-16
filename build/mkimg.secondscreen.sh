@@ -7,6 +7,15 @@
 
 profile_secondscreen() {
 	profile_standard
+
+	# Append the writable data partition (built by build/mkprofile.sh and
+	# passed in the environment). xorriso marks it in both the MBR and the
+	# GPT of the hybrid image, so the guest can mount it by label.
+	# Type 0x0c = FAT32 LBA.
+	if [ -n "${PERSIST_IMG:-}" ]; then
+		iso_opts="$iso_opts -append_partition 3 0x0c $PERSIST_IMG -appended_part_as_gpt"
+	fi
+
 	title="SecondScreen"
 	desc="Tiny kiosk OS that turns an old laptop into a wireless second monitor
 		for a Windows PC. Boots straight into a fullscreen Moonlight stream.

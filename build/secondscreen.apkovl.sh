@@ -122,7 +122,7 @@ EOF
 # ----------------------------------------------------------- persist rules
 # /etc is NOT kept persistent across reboots (the ISO's own apkovl wins at
 # boot). Instead, Wi-Fi + pairing data live in plain files on the USB
-# stick's FIRST partition (vfat, LABEL=SECONDSCREEN), which we mount at
+# stick's data partition (vfat, LABEL=SECONDSCRN), which we mount at
 # /media/secondscreen and read/write directly (see secondscreen-sync and
 # the wizard). No lbu involved.
 mkdir -p "$tmp"/etc/secondscreen

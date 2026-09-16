@@ -138,8 +138,8 @@ Changes are saved to the USB stick automatically, so they survive reboots.
 Two ways:
 
 - **On the laptop itself:** `Ctrl+Alt+F2` → settings editor (see above).
-- **On any PC:** pull the stick — the data partition (label `SECONDSCREEN`)
-  is a normal FAT drive with:
+- **On any PC:** pull the stick — the data partition (label `SECONDSCRN`,
+  11 characters is the FAT maximum) is a normal FAT drive with:
 
 ```
 wpa_supplicant.conf   # Wi-Fi credentials
@@ -173,8 +173,9 @@ The build script (`build/mkprofile.sh`) runs inside an Alpine container and:
   small kernel + only Intel Wi-Fi/GPU firmware + Xorg/Moonlight packages
 - Generates the config overlay (`build/secondscreen.apkovl.sh`) with the
   kiosk inittab, Wi-Fi stack, and service wiring
-- Runs `mkimage` to produce the ISO, then `build/mkusbimg.sh` appends the
-  persistent data partition and outputs a flashable `.img`
+- Builds the persistent data partition (a 64 MB FAT filesystem labelled
+  `SECONDSCRN`) and has `mkimage`/xorriso append it to the ISO, so the
+  single `.iso` file is both bootable and writable
 
 ## Layout
 
@@ -183,7 +184,6 @@ build/
   mkimg.secondscreen.sh      Alpine image profile (packages, firmware)
   secondscreen.apkovl.sh     Config overlay generator (inittab, services)
   mkprofile.sh               Container build entrypoint
-  mkusbimg.sh                ISO -> pre-partitioned .img with persist partition
   overlay/                   Static config files shipped inside the image
     etc/init.d/secondscreen-net    Wi-Fi + DHCP service (self-contained)
     etc/init.d/secondscreen-sync   Loads saved settings from USB at boot

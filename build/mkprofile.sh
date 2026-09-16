@@ -20,6 +20,10 @@ WORKDIR="${WORKDIR:-/tmp/mkimage-work}"
 PRIMARY_REPO="https://dl-cdn.alpinelinux.org/alpine/v3.20/main"
 COMMUNITY_REPO="https://dl-cdn.alpinelinux.org/alpine/v3.20/community"
 
+# Size of the writable FAT partition that holds Wi-Fi + pairing state.
+PERSIST_MB="${PERSIST_MB:-64}"
+PERSIST_LABEL="SECONDSCRN"   # FAT labels are limited to 11 bytes
+
 echo "==> Installing build dependencies"
 apk add --no-cache \
 	alpine-base apk-tools-static abuild alpine-conf busybox fakeroot \
@@ -95,6 +99,31 @@ echo "==> Pre-flight: generating apkovl"
 
 cd "$OUTDIR"
 
+echo "==> Building the persistent data partition ($PERSIST_MB MB, label $PERSIST_LABEL)"
+# A raw FAT filesystem that xorriso appends to the ISO as a real partition
+# (-append_partition). xorriso handles the MBR *and* the GPT of the hybrid
+# image itself, which hand-editing the partition table cannot do reliably:
+# the isohybrid MBR contains a partition starting at sector 0, and sfdisk
+# refuses to rewrite such a table. The guest mounts this partition by label,
+# whatever number xorriso assigns it.
+command -v mkfs.vfat >/dev/null || { echo "mkfs.vfat not found (dosfstools)" >&2; exit 1; }
+mkdir -p "$WORKDIR"
+PERSIST_IMG="$WORKDIR/secondscreen-persist.img"
+rm -f "$PERSIST_IMG"
+dd if=/dev/zero of="$PERSIST_IMG" bs=1M count="$PERSIST_MB" status=none
+mkfs.vfat -F 32 -n "$PERSIST_LABEL" "$PERSIST_IMG" >/dev/null
+export PERSIST_IMG
+
+# Read the label back: a too-long label is silently truncated, which would
+# leave the guest looking for a filesystem that does not exist and quietly
+# forgetting the Wi-Fi credentials on every reboot. FAT labels are 11 bytes,
+# so 'SECONDSCREEN' (12) would NOT work here.
+ON_DISK_LABEL=$(fatlabel "$PERSIST_IMG" 2>/dev/null || blkid -o value -s LABEL "$PERSIST_IMG" 2>/dev/null || true)
+if [ "$ON_DISK_LABEL" != "$PERSIST_LABEL" ]; then
+	echo "error: persist filesystem label is '$ON_DISK_LABEL', expected '$PERSIST_LABEL'" >&2
+	exit 1
+fi
+
 echo "==> Registering custom profile with mkimage"
 # mkimage.sh auto-sources ~/.mkimage/mkimg.*.sh as profile plugins.
 mkdir -p "$HOME/.mkimage"
@@ -115,8 +144,18 @@ sh /aports/scripts/mkimage.sh \
 
 ISO_FILE=$(ls "$OUTDIR"/secondscreen-*.iso | head -n 1)
 
-echo "==> Appending persistent data partition -> flashable .img"
-sh "$PROJECT_DIR/build/mkusbimg.sh" "$ISO_FILE"
+echo "==> Verifying the flashable image"
+ls -la "$ISO_FILE"
+PERSIST_SECTORS=$(( PERSIST_MB * 1024 * 1024 / 512 ))
+LAYOUT="$({ sfdisk -d "$ISO_FILE"; } 2>&1 || true)"
+echo "$LAYOUT" | head -n 40
+# A persist partition that is missing from the table would still boot, but
+# would silently forget the Wi-Fi credentials on every reboot.
+echo "$LAYOUT" | grep -q "$PERSIST_SECTORS" || {
+	echo "error: no partition of $PERSIST_SECTORS sectors ($PERSIST_MB MB) in the image's partition table" >&2
+	exit 1
+}
+echo "==> persist partition verified (label $PERSIST_LABEL, $PERSIST_SECTORS sectors)"
 
 echo "==> Build complete:"
 ls -la "$OUTDIR"

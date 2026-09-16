@@ -4,16 +4,19 @@
 #
 # The system runs from RAM, so /etc is rebuilt from the ISO's apkovl on
 # every boot. The source of truth for user state is a plain directory on
-# the USB stick's FIRST partition (vfat, LABEL=SECONDSCREEN), mounted at
+# the USB stick's data partition (vfat, LABEL=SECONDSCRN), mounted at
 # /media/secondscreen:
 #
 #   wpa_supplicant.conf   Wi-Fi credentials (copied to /etc before network)
 #   pairing.conf          Moonlight host + stream settings
 #
+# NB: FAT volume labels are limited to 11 bytes, so the label is SECONDSCRN
+# and not SECONDSCREEN.
+#
 # Called as an OpenRC boot service (mode: load) and by the wizard
 # (mode: save). Mode is $1; default is "load".
 
-PERSIST_LABEL="SECONDSCREEN"
+PERSIST_LABEL="SECONDSCRN"
 PERSIST_MNT="/media/secondscreen"
 MODE="${1:-load}"
 
