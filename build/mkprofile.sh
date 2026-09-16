@@ -24,6 +24,7 @@ echo "==> Installing build dependencies"
 apk add --no-cache \
 	alpine-base apk-tools-static abuild alpine-conf busybox fakeroot \
 	syslinux xorriso mtools dosfstools e2fsprogs sfdisk \
+	squashfs-tools grub grub-bios grub-efi util-linux-misc \
 	curl openssl git findutils
 
 echo "==> Fetching upstream mkimage scripts ($APORTS_REF)"
