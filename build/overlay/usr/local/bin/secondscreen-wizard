@@ -39,11 +39,12 @@ get_hidden() {
 }
 
 # ------------------------------------------------------------- persistence
+# The device discovery lives in secondscreen-sync (it has to work without
+# udev, which this image does not run).
 mount_persist() {
 	mkdir -p "$PERSIST_MNT"
 	mountpoint -q "$PERSIST_MNT" && return 0
-	mount LABEL="$PERSIST_LABEL" "$PERSIST_MNT" 2>/dev/null && return 0
-	return 1
+	secondscreen-sync mount >/dev/null 2>&1
 }
 
 # ------------------------------------------------------------- wifi config

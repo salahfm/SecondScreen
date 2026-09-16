@@ -23,6 +23,7 @@ COMMUNITY_REPO="https://dl-cdn.alpinelinux.org/alpine/v3.20/community"
 # Size of the writable FAT partition that holds Wi-Fi + pairing state.
 PERSIST_MB="${PERSIST_MB:-64}"
 PERSIST_LABEL="SECONDSCRN"   # FAT labels are limited to 11 bytes
+PERSIST_MARKER="secondscreen-data"   # must match secondscreen-sync
 
 echo "==> Installing build dependencies"
 apk add --no-cache \
@@ -123,6 +124,19 @@ if [ "$ON_DISK_LABEL" != "$PERSIST_LABEL" ]; then
 	echo "error: persist filesystem label is '$ON_DISK_LABEL', expected '$PERSIST_LABEL'" >&2
 	exit 1
 fi
+
+# A marker file lets the guest identify this partition positively by
+# mounting and looking, rather than trusting a volume-label lookup (busybox
+# resolves LABEL= through udev's /dev/disk/by-label symlinks, and the image
+# runs mdev, not udev).
+command -v mcopy >/dev/null || { echo "mcopy not found (mtools)" >&2; exit 1; }
+MARKER_SRC="$WORKDIR/$PERSIST_MARKER"
+printf 'SecondScreen persistence partition. Do not delete.\n' > "$MARKER_SRC"
+mcopy -i "$PERSIST_IMG" "$MARKER_SRC" "::/$PERSIST_MARKER"
+mdir -i "$PERSIST_IMG" "::/" | grep -q "$PERSIST_MARKER" || {
+	echo "error: could not write the marker file into the persist filesystem" >&2
+	exit 1
+}
 
 echo "==> Registering custom profile with mkimage"
 # mkimage.sh auto-sources ~/.mkimage/mkimg.*.sh as profile plugins.

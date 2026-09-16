@@ -18,20 +18,50 @@
 
 PERSIST_LABEL="SECONDSCRN"
 PERSIST_MNT="/media/secondscreen"
+# Marker file written into the partition at image build time. It identifies
+# OUR partition positively, which the volume label alone cannot do: busybox
+# resolves LABEL= through the /dev/disk/by-label symlinks that udev creates,
+# and this image runs busybox mdev instead of udev.
+PERSIST_MARKER="secondscreen-data"
 MODE="${1:-load}"
 
 log() {
 	echo "[secondscreen-sync] $*" >&2
 }
 
+# Do the candidate block devices already exist as nodes?
+candidate_devices() {
+	echo "/dev/disk/by-label/$PERSIST_LABEL"
+	for d in /dev/sd*[0-9] /dev/hd*[0-9] /dev/vd*[0-9] /dev/mmcblk*p[0-9] \
+		/dev/nvme*n*p[0-9] /dev/disk/by-id/*-part*; do
+		[ -e "$d" ] || continue
+		echo "$d"
+	done
+}
+
 mount_persist() {
 	mkdir -p "$PERSIST_MNT"
 	mountpoint -q "$PERSIST_MNT" && return 0
-	if mount LABEL="$PERSIST_LABEL" "$PERSIST_MNT" 2>/dev/null; then
-		log "persist partition mounted at $PERSIST_MNT"
-		return 0
-	fi
-	log "no persist partition (LABEL=$PERSIST_LABEL) found - state will not survive reboot"
+
+	for dev in $(candidate_devices); do
+		[ -e "$dev" ] || continue
+		if mount -t vfat -o ro "$dev" "$PERSIST_MNT" 2>/dev/null; then
+			if [ -f "$PERSIST_MNT/$PERSIST_MARKER" ]; then
+				umount "$PERSIST_MNT"
+				# Remount read-write: /dev/disk/by-label resets when
+				# the node is the real device path.
+				if mount -t vfat "$dev" "$PERSIST_MNT" 2>/dev/null; then
+					log "persist partition $dev mounted at $PERSIST_MNT"
+					return 0
+				fi
+				log "$dev has the marker file but could not be remounted read-write"
+				return 1
+			fi
+			umount "$PERSIST_MNT" 2>/dev/null
+		fi
+	done
+
+	log "no persist partition (label $PERSIST_LABEL / marker $PERSIST_MARKER) found - state will not survive reboot"
 	return 1
 }
 
@@ -73,5 +103,8 @@ do_save() {
 case "$MODE" in
 	load) do_load ;;
 	save) do_save ;;
-	*) echo "usage: $0 [load|save]" >&2; exit 2 ;;
+	# Bring the partition up without touching /etc, so other tools (the
+	# first-boot wizard, the tty2 settings editor) can read and write it.
+	mount) mount_persist ;;
+	*) echo "usage: $0 [load|save|mount]" >&2; exit 2 ;;
 esac
