@@ -26,10 +26,12 @@ profile_secondscreen() {
 	# repository. The apkovl's /etc/apk/world must only reference packages
 	# that exist in that repository, because Alpine's init installs world
 	# from it at boot. Keep the two lists consistent.
+	# (Firmware is NOT listed here: it only needs to exist in the modloop,
+	# which section_kernels() below builds with its own package set. That
+	# keeps ~90 MB of firmware out of the boot repository. In Alpine 3.20
+	# there is no linux-firmware-iwlwifi split; the flat iwlwifi-*.ucode
+	# files ship in the 'other' catch-all subpackage.)
 	apks="$apks
-		linux-firmware-none
-		linux-firmware-iwlwifi
-		linux-firmware-i915
 		moonlight-qt
 		xorg-server
 		mesa-gl
@@ -51,14 +53,14 @@ profile_secondscreen() {
 
 # Override of the upstream section_kernels (mkimg.base.sh): identical logic,
 # but the kernel/modloop is built with a trimmed firmware package set
-# (linux-firmware-none + Intel Wi-Fi/GPU splits) instead of the hardcoded
+# (linux-firmware-none + the Intel 'other' catch-all that carries the flat
+# iwlwifi-*.ucode files, + the i915 GPU split) instead of the hardcoded
 # full 'linux-firmware' package. This keeps the modloop (and the whole ISO)
-# a fraction of the upstream size. The same three firmware packages are in
-# the profile 'apks' list above so they also land in the boot repository.
+# a fraction of the upstream size.
 section_kernels() {
 	local _f _a _pkgs
 	for _f in $kernel_flavors; do
-		_pkgs="linux-$_f linux-firmware-none linux-firmware-iwlwifi linux-firmware-i915 wireless-regdb $modloop_addons"
+		_pkgs="linux-$_f linux-firmware-none linux-firmware-other linux-firmware-i915 wireless-regdb $modloop_addons"
 		for _a in $kernel_addons; do
 			_pkgs="$_pkgs $_a-$_f"
 		done

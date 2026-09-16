@@ -1,3 +1,6 @@
+# App-local directory
+.freebuff/
+
 # Build outputs (CI produces these)
 out/
 *.iso
