@@ -24,8 +24,13 @@ echo "==> Installing build dependencies"
 apk add --no-cache \
 	alpine-base apk-tools-static abuild alpine-conf busybox fakeroot \
 	syslinux xorriso mtools dosfstools e2fsprogs sfdisk \
-	squashfs-tools grub grub-bios grub-efi util-linux-misc \
+	squashfs-tools grub grub-bios grub-efi util-linux-misc mkinitfs \
 	curl openssl git findutils
+
+# mkimage.sh refuses to run unless the aports checkout looks real
+# ([ -e "$APORTS/main/build-base" ]). We only need its scripts/ dir, so
+# create the marker path it checks for.
+mkdir -p /aports/main/build-base
 
 echo "==> Fetching upstream mkimage scripts ($APORTS_REF)"
 mkdir -p /aports/scripts
