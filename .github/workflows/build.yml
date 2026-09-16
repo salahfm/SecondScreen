@@ -15,6 +15,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
     env:
       APORTS_REF: v3.20.0
       ISO_TAG: dev
@@ -38,8 +41,8 @@ jobs:
       # actions don't work in Alpine containers (musl), so the Alpine side
       # runs via plain `docker run` on the Ubuntu runner instead.
       #
-      # The container is named so a later step can read its full stdout
-      # (docker logs) even though the step itself fails.
+      # The container is named so later steps can read its full stdout
+      # (docker logs) even when this step fails.
       - name: Build ISO + flashable image inside Alpine container
         run: |
           docker run --name ssbuild \
@@ -65,6 +68,26 @@ jobs:
             docker logs ssbuild 2>&1 || echo '(container gone - see step above)'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Also post the tail of the build output to a GitHub issue: issue
+      # comments are readable via the unauthenticated API, unlike job logs.
+      - name: Post build log to debug issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          docker logs ssbuild > build-output.txt 2>&1 || true
+          {
+            echo "Run: ${{ github.run_id }} commit: ${{ github.sha }}"
+            echo '```'
+            tail -n 200 build-output.txt
+            echo '```'
+          } > comment-body.md
+          gh issue view 1 -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh issue create -R "$GITHUB_REPOSITORY" \
+              --title "CI debug log" --body "CI log thread" || true
+          gh issue comment 1 -R "$GITHUB_REPOSITORY" --body-file comment-body.md || true
+        continue-on-error: true
 
       - name: Remove build container
         if: always()
